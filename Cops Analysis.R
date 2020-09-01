@@ -9,6 +9,8 @@ library(scales)
 library(lubridate)
 library(sp)
 
+# loading in base dfs
+
 df_cops <- read_csv('/Users/anagonzalez/Documents/Cop Analysis/cop_analysis_data.csv')
 df_acs <- read_csv('/Users/anagonzalez/Documents/Cop Analysis/acs_community_chi.csv')
 df_complaints <- read_csv('/Users/anagonzalez/Documents/Cop Analysis/Complaint Specifics.csv')
@@ -18,10 +20,7 @@ tmp_filepath <- paste0(tempdir(), '/', basename(url))
 download.file(url = paste0(url), destfile = tmp_filepath)
 sf_areas <- sf::st_read(tmp_filepath) %>% st_as_sf()
 
-# df_cops_sum <- df_cops %>%
-#   group_by(community) %>%
-#   summarise_at(vars(vars_list), list(sum)) %>%
-#   ungroup() 
+# expand and format race and age data
 
 df_cops_sum <- df_cops %>%
   select(community,race_coalesced,race_subethnicity,age_coalesced,cpd_role,
@@ -51,6 +50,8 @@ df_cops_sum <- df_cops %>%
          total_annual_salary_agg =  sum(total_annual_salary)) %>%
   ungroup()
 
+# clean up base cop data
+
 df_cops_wide <- df_cops_sum %>% 
   filter(variable %in% c('total','race_coalesced', 'age_coalesced')) %>%
   select(community, variable, value, number_of_cops, total_annual_salary) %>%
@@ -61,6 +62,8 @@ df_cops_wide <- df_cops_sum %>%
   rename_all(tolower) %>%
   mutate(community_label = str_to_title(community))
 
+# clean complaint data
+
 df_complaints <- df_complaints %>%
   rename_all(tolower) %>%
   select(incidentdate, latitude, longitude, officefirst, officerlast) %>%
@@ -68,20 +71,26 @@ df_complaints <- df_complaints %>%
 df_sf = st_as_sf(df_complaints %>% filter(!is.na(longitude) | !is.na(latitude)), coords = c("longitude", "latitude"),
                  crs = 4326, agr = "constant")
 
+# create base analysis data
+
 df_analysis <- left_join(df_cops_wide, df_acs, by = c('community'='community'))
 df_analysis <- left_join(sf_areas, df_analysis, by = c('community'='community')) 
-
-df_analysis_long <- left_join(df_cops_sum, df_acs, by = c('community'='community'))
-df_analysis_long <- left_join(sf_areas, df_analysis_long, by = c('community'='community')) 
 
 df_analysis <- df_analysis %>%
   st_transform(crs = st_crs(4326)) %>% 
   st_as_sf()
 
+# create long analysis data
+
+df_analysis_long <- left_join(df_cops_sum, df_acs, by = c('community'='community'))
+df_analysis_long <- left_join(sf_areas, df_analysis_long, by = c('community'='community')) 
+
 df_analysis_long <- df_analysis_long %>%
   st_transform(crs = st_crs(4326)) %>% 
   st_as_sf() %>%
   mutate(salary_per_cop = total_annual_salary / number_of_cops)
+
+#join complaint data with geometry
 
 df_joined <-  st_join(df_sf, sf_areas, left= TRUE) %>%
   na.omit(df_joined)
@@ -99,6 +108,7 @@ df_done <- left_join(df_joined, sf_areas, by = c('community'='community')) %>%
   select(community, number_of_incidents, share_of_incidents)
 df_analysis <- left_join(df_analysis, df_done, by = c('community'='community'))
 
+# calculate additional data points for analysis
 
 df_analysis <- df_analysis %>%
   mutate(cops_per_capita = number_of_cops_total_total / (tot_population_acs_14_18/1000) ,
@@ -114,15 +124,28 @@ df_analysis <- df_analysis %>%
   mutate(share_of_pop_hispanic = hispanic_acs_14_18 / tot_population_acs_14_18) %>%
   mutate(share_of_black_or_hisp_pop = share_of_pop_black + share_of_pop_hispanic)
 
+# pull out geometry [not sure if this is effective to join back in later]
+
+df_analysis_geo <- df_analysis %>%
+  select (community, geometry, shape_area, shape_len, area_num_1, area_numbe)
+
+# balance age data
+
 df_cops_age <- df_analysis_long %>%
   filter(variable == 'age_coalesced')
+
+df_cops_age_b <- data.frame(community = rep(unique(df_cops_age$community), length(unique(df_cops_age$value))),
+                            value = rep(unique(df_cops_age$value), each = length(unique(df_cops_age$community))))
+df_cops_age_balanced <- left_join(df_cops_age_b, df_cops_age) %>%
+  select (community, value, number_of_cops, total_annual_salary)
+df_cops_age_balanced[is.na(df_cops_age_balanced)] = 0
+df_cops_age_balanced <- left_join(df_cops_age_balanced, df_analysis_geo)
+
+# balance race data
 
 df_cops_race <- df_analysis_long %>%
   filter(variable == 'race_coalesced')
 #names(df_analysis_long)
-
-df_analysis_geo <- df_analysis %>%
-  select (community, geometry, shape_area, shape_len, area_num_1, area_numbe)
 
 df_cops_race_b <- data.frame(community = rep(unique(df_cops_race$community), length(unique(df_cops_race$value))),
                    value = rep(unique(df_cops_race$value), each = length(unique(df_cops_race$community))))
@@ -131,12 +154,7 @@ df_cops_race_balanced <- left_join(df_cops_race_b, df_cops_race) %>%
 df_cops_race_balanced[is.na(df_cops_race_balanced)] = 0
 df_cops_race_balanced <- left_join(df_cops_race_balanced, df_analysis_geo)
 
-df_cops_age_b <- data.frame(community = rep(unique(df_cops_age$community), length(unique(df_cops_age$value))),
-                             value = rep(unique(df_cops_age$value), each = length(unique(df_cops_age$community))))
-df_cops_age_balanced <- left_join(df_cops_age_b, df_cops_age) %>%
-  select (community, value, number_of_cops, total_annual_salary)
-df_cops_age_balanced[is.na(df_cops_age_balanced)] = 0
-df_cops_age_balanced <- left_join(df_cops_age_balanced, df_analysis_geo)
+# create aesthetics
 
 theme_plot <- theme(axis.line = element_blank(),
                     axis.text = element_blank(),
@@ -157,6 +175,7 @@ theme_plot <- theme(axis.line = element_blank(),
                     legend.background = element_rect(fill = "#f5f5f2", color = NA),
                     panel.border = element_blank())  
 
+# cop distribution by neighborhood
 (p <- ggplot(df_analysis) +
     geom_sf( aes(fill = cops_per_capita), color = 'black', size = .1) +
     #geom_sf_text(aes(label =str_wrap( community_label, width = 4)), size = 2, check_overlap = TRUE) +
@@ -208,7 +227,7 @@ theme_plot <- theme(axis.line = element_blank(),
     theme_minimal() + 
     theme_plot)
 
-# cop distribution
+# cop distribution by share
 (p <- ggplot(df_analysis) +
     geom_sf( aes(fill = share_of_cops), color = 'black', size = .1) +
     #geom_sf_text(aes(label =str_wrap( community_label, width = 4)), size = 2, check_overlap = TRUE) +
@@ -308,8 +327,6 @@ theme_plot <- theme(axis.line = element_blank(),
 #     min.segment.length = 0, 
 #     size = 2, 
 #     check_overlap = TRUE
-
-?facet_grid
     
 # faceted by age, neighborhood distribution of cops
 (p <- ggplot(df_cops_age) +
@@ -371,7 +388,4 @@ rlang::last_error()
 # faceted by race, incident distribution
 
 # race matching with incidents?
-
-
-unique(df_analysis_long$value)
     
